@@ -1,0 +1,31 @@
+Прошивка
+  src/config.inc                         параметры сборки, USART и таймеров
+  src/firmware.S                         главная единица ассемблирования
+  src/modules/branch_macros.inc          макросы условных переходов AVR
+  src/modules/commands_helpers.inc       общие процедуры разбора команд
+  src/modules/commands_input_timer.inc   команды изменения интервалов
+  src/modules/commands_pair_strings.inc  команды парной конфигурации и строк
+  src/modules/event_queue.inc             очередь событий ответов
+  src/modules/scheduler_restart.inc       запуск и перестройка расписания
+  src/modules/startup.inc                 начальная настройка и главный цикл
+  src/modules/state_bss.inc               неинициализированное состояние SRAM
+  src/modules/state_data.inc              начальные значения состояния
+  src/modules/status_dispatch.inc         подготовка и отправка ответов OK/ERR
+  src/modules/timer1.inc                  Timer1 Compare A и одноразовое Compare B
+  src/modules/timer2.inc                  периодический Timer2 Compare
+  src/modules/usart.inc                   настройка USART, приём и передача байтов
+  src/modules/validation.inc              проверка допустимости расписания
+
+Тулзы
+  tools/console.c                         интерактивная консоль USART
+  tools/stress_commands.c                 автоматический стресс-клиент команд
+  tools/analyze_udr_trace.c               анализ периодической трассы
+  tools/analyze_stress_trace.c            анализ трассы под нагрузкой
+  tools/schedule_model.c/.h                независимая модель допустимости расписания
+  tools/test_tools.c                      тесты модели расписания
+  tools/test_trace_fixture.c              генератор тестовых CSV-трасс
+  tools/test_analyzers.sh                  интеграционные тесты анализаторов (POSIX sh)
+  tools/simavr_pty.c                      запуск simavr с виртуальным USART-портом
+  tools/simavr_trace.c                    трассировщик периодического варианта
+  tools/simavr_stress_trace.c             трассировщик командного варианта
+  tools/rejected_config.gdb               сценарий GDB для проверки отказа конфигурации
