@@ -129,6 +129,22 @@ void registerIncrementRoutes(std::shared_ptr<INumberService> service) {
         throw std::invalid_argument("registerIncrementRoutes requires a service");
     }
 
+    // Перехватываем OPTIONS до маршрутизации: Drogon автоматически отвечает на
+    // этот метод пустым 200, но контракт нашего API допускает только POST.
+    drogon::app().registerSyncAdvice(
+        [](const drogon::HttpRequestPtr& request) -> drogon::HttpResponsePtr {
+            if (request->path() != "/api/increment" ||
+                request->method() != drogon::Options) {
+                return {};
+            }
+
+            logging::write(
+                "ERROR code=METHOD_NOT_ALLOWED method=OPTIONS path=/api/increment");
+            return errorResponse(drogon::k405MethodNotAllowed,
+                                 "METHOD_NOT_ALLOWED",
+                                 "Only HTTP POST is accepted by this endpoint.");
+        });
+
     drogon::app().registerHandler(
         "/api/increment",
         [service = std::move(service)](

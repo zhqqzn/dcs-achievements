@@ -13,7 +13,7 @@ MAX_INPUT = int(os.environ.get("MAX_INPUT", "9223372036854775806"))
 
 # Отправляем реальный HTTP-запрос и возвращаем код вместе с JSON для единых проверок.
 def request(method: str, body: Optional[str] = None):
-    data = None if body is None else body.encode("ascii")
+    data = None if body is None else body.encode("utf-8")
     headers = {}
     if data is not None:
         headers["Content-Type"] = "text/plain"
@@ -27,7 +27,12 @@ def request(method: str, body: Optional[str] = None):
     except urllib.error.HTTPError as error:
         try:
             raw = error.read().decode("utf-8")
-            return error.code, json.loads(raw)
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                # Учитываем ответ Nginx в HTML: веб-сервер может отклонить тело раньше Drogon.
+                body = {"raw": raw}
+            return error.code, body
         finally:
             error.close()
 
@@ -94,10 +99,26 @@ class IncrementApiTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(duplicate_body["error"]["code"], "DUPLICATE_NUMBER")
 
+    # Проверяем, что ведущие нули не создают отдельное числовое значение:
+    # сохраняем именно число, поэтому его каноническая запись тоже считается повтором.
+    def test_leading_zeros_do_not_bypass_duplicate_detection(self):
+        for _attempt in range(40):
+            number = new_candidate()
+            status, body = request("POST", f"000{number}")
+            if status == 200:
+                break
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["input"], number)
+        self.assertEqual(body["result"], number + 1)
+
+        status, body = request("POST", str(number))
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"], "DUPLICATE_NUMBER")
+
     # Проверяем разные нарушения формата: пустое тело, текст, дробь, знак и пробелы.
     # Эти запросы должны отклоняться до обращения к бизнес-логике и БД.
     def test_invalid_number_formats_are_rejected(self):
-        invalid_bodies = ("", "abc", "12x", "12.5", "-1", "+1", " 12", "12 ")
+        invalid_bodies = ("", "abc", "12x", "12.5", "-1", "+1", " 12", "12 ", "1\n", "1\x00", "１２")
         for raw_body in invalid_bodies:
             with self.subTest(body=raw_body):
                 status, body = request("POST", raw_body)
@@ -114,15 +135,54 @@ class IncrementApiTests(unittest.TestCase):
     # Проверяем верхнюю границу независимо от настройки MAX_INPUT: сервис не может
     # разрешить INT64_MAX, потому что для n + 1 требуется представимое значение.
     def test_number_above_configured_maximum_is_rejected(self):
-        status, body = request("POST", "9223372036854775807")
+        status, body = request("POST", str(MAX_INPUT + 1))
         self.assertEqual(status, 400, body)
         self.assertEqual(body["error"]["code"], "NUMBER_OUT_OF_RANGE")
 
-    # Подтверждаем, что маршрут не принимает другой HTTP-метод.
+        # Отказ по диапазону не меняет историю: тот же вход отклоняется той же ошибкой.
+        status, body = request("POST", str(MAX_INPUT + 1))
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body["error"]["code"], "NUMBER_OUT_OF_RANGE")
+
+    # Подтверждаем, что маршрут не принимает другие HTTP-методы.
     def test_only_post_is_allowed(self):
-        status, body = request("GET")
-        self.assertEqual(status, 405)
-        self.assertEqual(body["error"]["code"], "METHOD_NOT_ALLOWED")
+        for method in ("GET", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            with self.subTest(method=method):
+                status, body = request(method)
+                self.assertEqual(status, 405, body)
+                self.assertEqual(body["error"]["code"], "METHOD_NOT_ALLOWED")
+
+    # Проверяем liveness-маршрут отдельно от бизнес-операций и состояния БД.
+    def test_health_endpoint_reports_process_status(self):
+        req = urllib.request.Request(f"{BASE_URL}/healthz", method="GET")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read().decode("utf-8")), {"status": "ok"})
+
+    # Проверяем, что разные независимые значения тоже обрабатываются при конкуренции.
+    def test_concurrent_distinct_numbers_are_processed(self):
+        final_results = None
+        for _attempt in range(30):
+            base = new_candidate()
+            numbers = [base + offset * 1000 for offset in range(8)]
+            if numbers[-1] > MAX_INPUT:
+                continue
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(numbers)) as executor:
+                futures = [executor.submit(request, "POST", str(number)) for number in numbers]
+                final_results = [(number, future.result()) for number, future in zip(numbers, futures)]
+            if all(status == 200 for _number, (status, _body) in final_results):
+                break
+        self.assertIsNotNone(final_results)
+        for number, (status, body) in final_results:
+            with self.subTest(number=number):
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body["input"], number)
+                self.assertEqual(body["result"], number + 1)
+
+    # Проверяем ограничение размера тела на веб-сервере до передачи запроса приложению.
+    def test_request_body_over_nginx_limit_is_rejected(self):
+        status, body = request("POST", "1" * 65)
+        self.assertEqual(status, 413, body)
 
     # Отправляем одинаковое число одновременно и требуем ровно один успешный ответ.
     def test_concurrent_duplicate_requests_are_serialized(self):

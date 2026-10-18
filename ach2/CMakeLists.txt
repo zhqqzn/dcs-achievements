@@ -43,6 +43,7 @@ if(BUILD_HTTP_SERVER)
 endif()
 
 if(BUILD_TESTING)
+    find_package(Threads REQUIRED)
     add_executable(number-service-unit-tests
         tests/number_service_test.cpp
     )
@@ -51,4 +52,14 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion>
     )
     add_test(NAME number-service-unit-tests COMMAND number-service-unit-tests)
+
+    # Проверяем сбои транзакционных операций отдельно от базовых правил сценария.
+    add_executable(number-service-fault-tests
+        tests/number_service_fault_tests.cpp
+    )
+    target_link_libraries(number-service-fault-tests PRIVATE number-service-core Threads::Threads)
+    target_compile_options(number-service-fault-tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion>
+    )
+    add_test(NAME number-service-fault-tests COMMAND number-service-fault-tests)
 endif()

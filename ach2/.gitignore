@@ -3,3 +3,6 @@ build/
 cmake-build-*/
 __pycache__/
 *.pyc
+
+# Временная конфигурация изолированных системных тестов.
+.env.system-test.*
