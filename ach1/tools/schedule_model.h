@@ -3,18 +3,20 @@
 
 #include <stdint.h>
 
+#include "../src/protocol_contract.inc"
+
 /* Константы модели должны совпадать с параметрами прошивки и настройками USART */
 #define SCHED_F_CPU 16000000UL
 #define SCHED_UBRR 16UL
 #define SCHED_CPU_CYCLES_PER_BIT (8UL * (SCHED_UBRR + 1UL))
-#define SCHED_UART_FRAME_CYCLES (10UL * SCHED_CPU_CYCLES_PER_BIT)
+#define SCHED_UART_FRAME_CYCLES UART_FRAME_CYCLES
 /* Наибольший ответ OK/ERR вместе с CR/LF занимает пять передаваемых байтов */
-#define SCHED_STATUS_MAX_LEN 5UL
-#define SCHED_STATUS_TX_CYCLES (SCHED_STATUS_MAX_LEN * SCHED_UART_FRAME_CYCLES)
+#define SCHED_STATUS_MAX_LEN UART_STATUS_ERR_FRAME_BYTES
+#define SCHED_STATUS_TX_CYCLES UART_STATUS_TX_CYCLES
 /* Запас на прохождение управляющего слота от планирования до начала ответа */
-#define SCHED_CONTROL_SLOT_SETUP 512UL
+#define SCHED_CONTROL_SLOT_SETUP UART_CONTROL_SLOT_SETUP_CYCLES
 /* Защитный промежуток не позволяет считать соседние передачи соприкасающимися */
-#define SCHED_OUTPUT_GUARD_CYCLES 32UL
+#define SCHED_OUTPUT_GUARD_CYCLES UART_OUTPUT_GUARD_CYCLES
 /* Timer2 использует делитель 128; его периоды допустимы только с этим шагом */
 #define SCHED_TIMER2_PRESCALER 128UL
 #define SCHED_TIMER2_MAX_CYCLES 32768UL

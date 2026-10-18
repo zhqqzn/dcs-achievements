@@ -13,11 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
-    char kind;
-    uint64_t cycle;
-    unsigned value;
-} trace_row_t;
+#include "trace_contract.h"
+
 
 typedef struct {
     uint64_t cycle;
@@ -29,23 +26,6 @@ typedef struct {
     uint64_t cycle;
     unsigned char value;
 } udr_event_t;
-
-/* Разбираем одну запись CSV. Поддерживаются оба варианта поля cycle: в кавычках и без них */
-static int parse_row(char *line, trace_row_t *row)
-{
-    unsigned long long cycle;
-    unsigned value;
-    char kind;
-    int fields = sscanf(line, " %c , \"%llu\" , %u", &kind, &cycle, &value);
-    if (fields != 3)
-        fields = sscanf(line, " %c , %llu , %u", &kind, &cycle, &value);
-    if (fields != 3)
-        return -1;
-    row->kind = kind;
-    row->cycle = (uint64_t)cycle;
-    row->value = value;
-    return 0;
-}
 
 /* Добавляем байт UDR в растущий массив событий; при нехватке места увеличиваем ёмкость вдвое */
 static int append_event(udr_event_t **events, size_t *count, size_t *capacity,
@@ -154,20 +134,24 @@ int main(int argc, char **argv)
     }
     while (nread > 0 && (buffer[nread - 1] == '\n' || buffer[nread - 1] == '\r'))
         buffer[--nread] = '\0';
-    if (strcmp(buffer, "kind,cycle,value") != 0) {
+    if (strcmp(buffer, TRACE_CSV_HEADER) != 0) {
         fprintf(stderr, "FAIL: invalid CSV header: %s\n", buffer);
         goto cleanup;
     }
 
     while ((nread = getline(&buffer, &buffer_size, input)) >= 0) {
-        trace_row_t row;
-        if (parse_row(buffer, &row) != 0) {
-            fprintf(stderr, "FAIL: malformed trace CSV row: %s", buffer);
+        trace_record_t row;
+        if (trace_contract_parse_record(buffer, &row) != 0) {
+            fprintf(stderr, "FAIL: malformed or unknown trace CSV row: %s", buffer);
             goto cleanup;
         }
-        if (row.kind == 'S' && epoch == UINT64_MAX)
+        if (row.kind != TRACE_KIND_TIMER1_START && row.kind != TRACE_KIND_UDR_WRITE) {
+            fprintf(stderr, "FAIL: record kind '%c' is not valid in a periodic UDR trace\n", row.kind);
+            goto cleanup;
+        }
+        if (row.kind == TRACE_KIND_TIMER1_START && epoch == UINT64_MAX)
             epoch = row.cycle;
-        if (row.kind == 'U' && append_event(&events, &event_count, &event_capacity, row.cycle, row.value) != 0) {
+        if (row.kind == TRACE_KIND_UDR_WRITE && append_event(&events, &event_count, &event_capacity, row.cycle, row.value) != 0) {
             fprintf(stderr, "FAIL: out of memory reading UDR events\n");
             goto cleanup;
         }
@@ -205,8 +189,8 @@ int main(int argc, char **argv)
     }
     /* Строки классифицируются по точному содержимому, затем их первые байты проверяются по сетке периодов */
     for (i = 0U; i < line_count; ++i) {
-        if (bytes_equal(&lines[i], "ping\r\n")) ping_cycles[ping_count++] = lines[i].cycle;
-        else if (bytes_equal(&lines[i], "pong\r\n")) pong_cycles[pong_count++] = lines[i].cycle;
+        if (bytes_equal(&lines[i], UART_DEFAULT_STREAM1_FRAME)) ping_cycles[ping_count++] = lines[i].cycle;
+        else if (bytes_equal(&lines[i], UART_DEFAULT_STREAM2_FRAME)) pong_cycles[pong_count++] = lines[i].cycle;
         else {
             ++malformed_count;
             if (malformed_count <= 10U) {

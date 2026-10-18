@@ -16,6 +16,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "../src/protocol_contract.inc"
+
 #define RX_CAPACITY 8192U
 #define LINE_CAPACITY 256U
 #define SEEN_CAPACITY 256U
@@ -23,7 +25,7 @@
 /* Отбрасываем обрывки ping/pong, которые PTY мог отдать при подключении посреди строки */
 static bool is_timer_fragment(const char *line)
 {
-    static const char *const messages[] = {"ping", "pong"};
+    static const char *const messages[] = {UART_DEFAULT_STREAM1_TEXT, UART_DEFAULT_STREAM2_TEXT};
     size_t m;
     for (m = 0U; m < sizeof(messages) / sizeof(messages[0]); ++m) {
         size_t length = strlen(messages[m]);
@@ -44,10 +46,10 @@ static bool is_periodic_traffic(const char *line)
     if (*cursor == '\0')
         return true;
     while (*cursor != '\0') {
-        if (strncmp(cursor, "ping", 4U) == 0)
-            cursor += 4;
-        else if (strncmp(cursor, "pong", 4U) == 0)
-            cursor += 4;
+        if (strncmp(cursor, UART_DEFAULT_STREAM1_TEXT, sizeof(UART_DEFAULT_STREAM1_TEXT) - 1U) == 0)
+            cursor += sizeof(UART_DEFAULT_STREAM1_TEXT) - 1U;
+        else if (strncmp(cursor, UART_DEFAULT_STREAM2_TEXT, sizeof(UART_DEFAULT_STREAM2_TEXT) - 1U) == 0)
+            cursor += sizeof(UART_DEFAULT_STREAM2_TEXT) - 1U;
         else
             return false;
     }
@@ -76,7 +78,7 @@ static void show_line(const unsigned char *raw, size_t length,
     char line[LINE_CAPACITY];
     size_t i;
 
-    while (length > 0U && (raw[length - 1U] == '\r' || raw[length - 1U] == '\n' ||
+    while (length > 0U && (raw[length - 1U] == UART_COMMAND_END_CR || raw[length - 1U] == UART_LINE_FEED ||
                            raw[length - 1U] == ' ' || raw[length - 1U] == '\t'))
         --length;
     while (length > 0U && (*raw == ' ' || *raw == '\t')) {
@@ -89,14 +91,14 @@ static void show_line(const unsigned char *raw, size_t length,
         line[i] = (raw[i] >= 0x20U && raw[i] <= 0x7eU) ? (char)raw[i] : '?';
     line[length] = '\0';
 
-    if (strcmp(line, "ping") == 0) {
+    if (strcmp(line, UART_DEFAULT_STREAM1_TEXT) == 0) {
         ++*ping_count;
         *first_rx_line = false;
         if (!periodic_summary)
             return;
         return;
     }
-    if (strcmp(line, "pong") == 0) {
+    if (strcmp(line, UART_DEFAULT_STREAM2_TEXT) == 0) {
         ++*pong_count;
         *first_rx_line = false;
         if (!periodic_summary)
@@ -114,7 +116,7 @@ static void show_line(const unsigned char *raw, size_t length,
     *first_rx_line = false;
 
     /* Ответы протокола показываем всегда, пользовательские строки — только один раз */
-    if (strcmp(line, "OK") != 0 && strcmp(line, "ERR") != 0) {
+    if (strcmp(line, UART_STATUS_OK_TEXT) != 0 && strcmp(line, UART_STATUS_ERR_TEXT) != 0) {
         if (line_was_seen(seen, *seen_count, line))
             return;
         if (*seen_count < SEEN_CAPACITY) {
@@ -248,7 +250,7 @@ int main(int argc, char **argv)
                     size_t i;
                     unsigned char delim = 0U;
                     for (i = 0U; i < rx_length; ++i) {
-                        if (rx[i] == '\r' || rx[i] == '\n') {
+                        if (rx[i] == UART_COMMAND_END_CR || rx[i] == UART_LINE_FEED) {
                             split = i;
                             delim = rx[i];
                             break;
@@ -259,7 +261,7 @@ int main(int argc, char **argv)
                     show_line(rx, split, &first_rx_line, seen, &seen_count,
                               periodic_summary, &ping_count, &pong_count);
                     size_t consumed = split + 1U;
-                    if (delim == '\r' && consumed < rx_length && rx[consumed] == '\n')
+                    if (delim == UART_COMMAND_END_CR && consumed < rx_length && rx[consumed] == UART_LINE_FEED)
                         ++consumed;
                     memmove(rx, rx + consumed, rx_length - consumed);
                     rx_length -= consumed;
@@ -286,11 +288,11 @@ int main(int argc, char **argv)
             }
             for (ssize_t j = 0; j < got; ++j) {
                 unsigned char ch = inbuf[j];
-                if (ch == '\r' || ch == '\n') {
+                if (ch == UART_COMMAND_END_CR || ch == UART_LINE_FEED) {
                     if (input_length > 0U) {
                         unsigned char command[LINE_CAPACITY + 1U];
                         memcpy(command, input, input_length);
-                        command[input_length] = '\r';
+                        command[input_length] = UART_COMMAND_END_CR;
                         if (write_all(fd, command, input_length + 1U) != 0) {
                             (void)fprintf(stderr, "UART write failed: %s\n", strerror(errno));
                             if (restore_termios)

@@ -14,6 +14,45 @@ if ! grep -q '^PASS:' build/test-task2.out; then
 fi
 echo 'PASS: valid task-2 UDR trace is accepted'
 
+# Общий парсер CSV должен отклонять лишние поля вместо того, чтобы молча их игнорировать
+{ head -n 1 build/test-task2.csv; sed -n '2p' build/test-task2.csv | sed 's/$/,unexpected/'; tail -n +3 build/test-task2.csv; } > build/test-task2-extra-field.csv
+if build/analyze-udr-trace build/test-task2-extra-field.csv --t1 16384 --t2 16384 --phi 8192 --tolerance 4 --minimum-lines 10 > build/test-task2-extra-field.out 2>&1; then
+    echo 'FAIL: periodic analyzer accepted a CSV row with an extra field' >&2
+    exit 1
+fi
+if ! grep -q '^FAIL: malformed or unknown trace CSV row:' build/test-task2-extra-field.out; then
+    cat build/test-task2-extra-field.out
+    echo 'FAIL: malformed CSV row was rejected for an unexpected reason' >&2
+    exit 1
+fi
+echo 'PASS: CSV parser rejects rows with extra fields'
+
+# U-записи представляют собой байты, поэтому значение шире 8 бит нарушает контракт трассы
+{ cat build/test-task2.csv; printf 'U,"42",256\n'; } > build/test-task2-byte-overflow.csv
+if build/analyze-udr-trace build/test-task2-byte-overflow.csv --t1 16384 --t2 16384 --phi 8192 --tolerance 4 --minimum-lines 10 > build/test-task2-byte-overflow.out 2>&1; then
+    echo 'FAIL: periodic analyzer accepted a UDR value wider than one byte' >&2
+    exit 1
+fi
+if ! grep -q '^FAIL: malformed or unknown trace CSV row:' build/test-task2-byte-overflow.out; then
+    cat build/test-task2-byte-overflow.out
+    echo 'FAIL: out-of-range CSV value was rejected for an unexpected reason' >&2
+    exit 1
+fi
+echo 'PASS: CSV parser rejects out-of-range byte values'
+
+# Трасса из другого режима не должна молча обрабатываться как периодическая трасса UDR
+sed 's/^U,/P,/' build/test-task2.csv > build/test-task2-wrong-kind.csv
+if build/analyze-udr-trace build/test-task2-wrong-kind.csv --t1 16384 --t2 16384 --phi 8192 --tolerance 4 --minimum-lines 10 > build/test-task2-wrong-kind.out 2>&1; then
+    echo 'FAIL: periodic analyzer accepted a stress-only record kind' >&2
+    exit 1
+fi
+if ! grep -q '^FAIL: record kind' build/test-task2-wrong-kind.out; then
+    cat build/test-task2-wrong-kind.out
+    echo 'FAIL: wrong trace kind was rejected for an unexpected reason' >&2
+    exit 1
+fi
+echo 'PASS: periodic analyzer rejects records from another trace mode'
+
 # Затем отрицательная трасса с нарушением допуска: нулевой код возврата здесь означает ошибку анализатора
 build/test-trace-fixture task2-bad build/test-task2-bad.csv
 if build/analyze-udr-trace build/test-task2-bad.csv --t1 16384 --t2 16384 --phi 8192 --tolerance 4 --minimum-lines 10 > build/test-task2-bad.out; then

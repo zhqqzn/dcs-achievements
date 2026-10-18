@@ -13,25 +13,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define UART_FRAME_CYCLES 1360U
-#define STATUS_TX_CYCLES 6800U
-#define CONTROL_SLOT_SETUP 512U
-#define TRACE_MARKER 0xa5U
-#define MAX_TRACE_LINE 24U
+#include "trace_contract.h"
+
 #define MAX_OUTPUT_BYTES 256U
 
-typedef struct {
-    char kind;
-    uint64_t cycle;
-    unsigned value;
-} trace_row_t;
 
 typedef struct {
     uint64_t sample_cycle;
     uint32_t t1;
     uint32_t t2;
-    unsigned char str1[MAX_TRACE_LINE];
-    unsigned char str2[MAX_TRACE_LINE];
+    unsigned char str1[TRACE_MAX_SCHEDULE_LINE_BYTES];
+    unsigned char str2[TRACE_MAX_SCHEDULE_LINE_BYTES];
     size_t len1;
     size_t len2;
     uint32_t marker_delta;
@@ -51,29 +43,12 @@ typedef struct {
     int64_t error;
 } timing_error_t;
 
-/* Разбираем тип записи, номер такта и значение; распознаем CSV с кавычками и без них */
-static int parse_row(char *line, trace_row_t *row)
-{
-    unsigned long long cycle;
-    unsigned value;
-    char kind;
-    int fields = sscanf(line, " %c , \"%llu\" , %u", &kind, &cycle, &value);
-    if (fields != 3)
-        fields = sscanf(line, " %c , %llu , %u", &kind, &cycle, &value);
-    if (fields != 3)
-        return -1;
-    row->kind = kind;
-    row->cycle = (uint64_t)cycle;
-    row->value = value;
-    return 0;
-}
-
 /* Добавляем очередную сырую запись трассы, расширяя массив по мере заполнения */
-static int append_row(trace_row_t **rows, size_t *count, size_t *capacity, trace_row_t row)
+static int append_row(trace_record_t **rows, size_t *count, size_t *capacity, trace_record_t row)
 {
     if (*count == *capacity) {
         size_t next = *capacity == 0U ? 1024U : *capacity * 2U;
-        trace_row_t *expanded = realloc(*rows, next * sizeof(**rows));
+        trace_record_t *expanded = realloc(*rows, next * sizeof(**rows));
         if (expanded == NULL) return -1;
         *rows = expanded;
         *capacity = next;
@@ -157,7 +132,7 @@ static bool line_is_status(const output_line_t *line, const char *status)
 }
 
 /* Читаем CSV целиком, запоминаем эпоху старта Timer1 и считаем все записи UDR */
-static int read_all_rows(const char *path, trace_row_t **rows, size_t *count,
+static int read_all_rows(const char *path, trace_record_t **rows, size_t *count,
                          uint64_t *start_cycle, size_t *udr_write_count)
 {
     FILE *file = fopen(path, "r");
@@ -177,20 +152,20 @@ static int read_all_rows(const char *path, trace_row_t **rows, size_t *count,
     }
     while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r'))
         line[--length] = '\0';
-    if (strcmp(line, "kind,cycle,value") != 0) {
+    if (strcmp(line, TRACE_CSV_HEADER) != 0) {
         fprintf(stderr, "FAIL: invalid CSV header: %s\n", line);
         free(line); fclose(file); return -1;
     }
     while ((length = getline(&line, &capacity, file)) >= 0) {
-        trace_row_t row;
+        trace_record_t row;
         (void)length;
-        if (parse_row(line, &row) != 0) {
+        if (trace_contract_parse_record(line, &row) != 0) {
             fprintf(stderr, "FAIL: malformed CSV row: %s", line);
             free(line); fclose(file); return -1;
         }
-        if (row.kind == 'S' && *start_cycle == UINT64_MAX)
+        if (row.kind == TRACE_KIND_TIMER1_START && *start_cycle == UINT64_MAX)
             *start_cycle = row.cycle;
-        if (row.kind == 'U')
+        if (row.kind == TRACE_KIND_UDR_WRITE)
             ++*udr_write_count;
         if (append_row(rows, count, &row_capacity, row) != 0) {
             fprintf(stderr, "FAIL: out of memory reading trace\n");
@@ -203,7 +178,7 @@ static int read_all_rows(const char *path, trace_row_t **rows, size_t *count,
 }
 
 /* Восстанавливаем из последовательности PORTC-меток периоды, строки и момент снимка расписания */
-static int decode_epochs(const trace_row_t *rows, size_t row_count,
+static int decode_epochs(const trace_record_t *rows, size_t row_count,
                          uint64_t start_cycle, epoch_t **epochs,
                          size_t *epoch_count)
 {
@@ -213,25 +188,25 @@ static int decode_epochs(const trace_row_t *rows, size_t row_count,
     startup.sample_cycle = start_cycle;
     startup.t1 = 24064U;
     startup.t2 = 24064U;
-    memcpy(startup.str1, "ping\r\n", 6U); startup.len1 = 6U;
-    memcpy(startup.str2, "pong\r\n", 6U); startup.len2 = 6U;
+    memcpy(startup.str1, UART_DEFAULT_STREAM1_FRAME, UART_DEFAULT_STREAM1_FRAME_BYTES); startup.len1 = UART_DEFAULT_STREAM1_FRAME_BYTES;
+    memcpy(startup.str2, UART_DEFAULT_STREAM2_FRAME, UART_DEFAULT_STREAM2_FRAME_BYTES); startup.len2 = UART_DEFAULT_STREAM2_FRAME_BYTES;
     if (append_epoch(epochs, epoch_count, &capacity, &startup) != 0)
         return -1;
 
     /* Запись E предваряет кадр метаданных P: сигнальный байт, поля снимка, периоды и обе строки */
     for (size_t i = 0U; i < row_count; ++i) {
-        if (rows[i].kind != 'E') continue;
+        if (rows[i].kind != TRACE_KIND_EPOCH_MARKER) continue;
         uint64_t marker_cycle = rows[i].cycle;
         uint32_t live_count = rows[i].value & 0xffffU;
-        if (i + 9U >= row_count || rows[i + 1U].kind != 'P' ||
-            rows[i + 1U].value != TRACE_MARKER) {
-            fprintf(stderr, "FAIL: epoch row at index %zu lacks marker 0xA5\n", i);
+        if (i + 1U + TRACE_SCHEDULE_FIELD_COUNT >= row_count || rows[i + 1U].kind != TRACE_KIND_PORTC_WRITE ||
+            rows[i + 1U].value != TRACE_SCHEDULE_MARKER) {
+            fprintf(stderr, "FAIL: epoch row at index %zu lacks marker 0x%02X\n", i, (unsigned)TRACE_SCHEDULE_MARKER);
             return -1;
         }
-        unsigned field[8];
-        for (size_t j = 0U; j < 8U; ++j) {
-            const trace_row_t *r = &rows[i + 2U + j];
-            if (r->kind != 'P') {
+        unsigned field[TRACE_SCHEDULE_FIELD_COUNT];
+        for (size_t j = 0U; j < TRACE_SCHEDULE_FIELD_COUNT; ++j) {
+            const trace_record_t *r = &rows[i + 2U + j];
+            if (r->kind != TRACE_KIND_PORTC_WRITE) {
                 fprintf(stderr, "FAIL: incomplete timing metadata after cycle=%" PRIu64 "\n", marker_cycle);
                 return -1;
             }
@@ -241,13 +216,13 @@ static int decode_epochs(const trace_row_t *rows, size_t row_count,
         uint32_t t1 = field[2] | (field[3] << 8U);
         uint32_t t2 = field[4] | (field[5] << 8U);
         unsigned len1 = field[6], len2 = field[7];
-        if (t1 == 0U || t2 == 0U || len1 < 2U || len1 > MAX_TRACE_LINE ||
-            len2 < 2U || len2 > MAX_TRACE_LINE) {
+        if (t1 == 0U || t2 == 0U || len1 < 2U || len1 > TRACE_MAX_SCHEDULE_LINE_BYTES ||
+            len2 < 2U || len2 > TRACE_MAX_SCHEDULE_LINE_BYTES) {
             fprintf(stderr, "FAIL: invalid schedule marker lengths/periods at cycle=%" PRIu64
                     ": periods=%u,%u lengths=%u,%u\n", marker_cycle, t1, t2, len1, len2);
             return -1;
         }
-        size_t payload_start = i + 10U;
+        size_t payload_start = i + 2U + TRACE_SCHEDULE_FIELD_COUNT;
         size_t payload_len = (size_t)len1 + len2;
         if (payload_start + payload_len > row_count) {
             fprintf(stderr, "FAIL: truncated schedule string payload at cycle=%" PRIu64 "\n", marker_cycle);
@@ -258,7 +233,7 @@ static int decode_epochs(const trace_row_t *rows, size_t row_count,
         epoch.t1 = t1; epoch.t2 = t2;
         epoch.len1 = len1; epoch.len2 = len2;
         for (size_t j = 0U; j < payload_len; ++j) {
-            if (rows[payload_start + j].kind != 'P') {
+            if (rows[payload_start + j].kind != TRACE_KIND_PORTC_WRITE) {
                 fprintf(stderr, "FAIL: non-marker row inside schedule string payload at cycle=%" PRIu64 "\n", marker_cycle);
                 return -1;
             }
@@ -287,7 +262,7 @@ static int decode_epochs(const trace_row_t *rows, size_t row_count,
 }
 
 /* Преобразуем поток отдельных UDR-байтов в строки; неполный хвост оставляем для диагностики */
-static int decode_uart_lines(const trace_row_t *rows, size_t row_count,
+static int decode_uart_lines(const trace_record_t *rows, size_t row_count,
                              output_line_t **lines, size_t *line_count,
                              unsigned char *partial, size_t *partial_len,
                              uint64_t *partial_cycle)
@@ -297,7 +272,7 @@ static int decode_uart_lines(const trace_row_t *rows, size_t row_count,
     size_t pending_len = 0U;
     uint64_t first_cycle = 0U;
     for (size_t i = 0U; i < row_count; ++i) {
-        if (rows[i].kind != 'U') continue;
+        if (rows[i].kind != TRACE_KIND_UDR_WRITE) continue;
         if (pending_len == 0U) first_cycle = rows[i].cycle;
         if (pending_len >= sizeof(pending)) {
             fprintf(stderr, "FAIL: UART output line exceeds %u bytes\n", MAX_OUTPUT_BYTES);
@@ -345,7 +320,7 @@ int main(int argc, char **argv)
     const char *path = NULL;
     int64_t tolerance = 4;
     size_t minimum_epochs = 20U, minimum_events = 10U;
-    trace_row_t *rows = NULL;
+    trace_record_t *rows = NULL;
     size_t row_count = 0U, udr_count = 0U;
     uint64_t start_cycle = UINT64_MAX;
     epoch_t *epochs = NULL;
@@ -400,8 +375,8 @@ int main(int argc, char **argv)
                                "cycle=%" PRIu64 ": line is not CRLF-terminated", line->cycle);
             ++malformed_count; continue;
         }
-        if (line_is_status(line, "OK")) { ++count_ok; continue; }
-        if (line_is_status(line, "ERR")) { ++count_err; continue; }
+        if (line_is_status(line, UART_STATUS_OK_TEXT)) { ++count_ok; continue; }
+        if (line_is_status(line, UART_STATUS_ERR_TEXT)) { ++count_err; continue; }
 
         size_t ei = epoch_count;
         for (size_t j = 0U; j < epoch_count; ++j) {
@@ -426,7 +401,7 @@ int main(int argc, char **argv)
         } else if (line_equals(line, epoch->str2, epoch->len2)) {
             stream = "B"; period = epoch->t2;
             base = (int64_t)(epoch->sample_cycle + epoch->len1 * UART_FRAME_CYCLES +
-                             STATUS_TX_CYCLES + CONTROL_SLOT_SETUP + epoch->t2);
+                             UART_STATUS_TX_CYCLES + UART_CONTROL_SLOT_SETUP_CYCLES + epoch->t2);
             epoch_count_for_stream = &per_epoch_b[ei];
         } else {
             if (malformed_count < 20U)

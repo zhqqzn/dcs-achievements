@@ -1,3 +1,7 @@
+Документация
+  USART_TRACE_CONTRACT.md                  контракт команд USART, ответов, трасс и маркера завершения
+  src/protocol_contract.inc                   общие протокольные константы прошивки и клиентов
+
 Прошивка
   src/config.inc                         параметры сборки, USART и таймеров
   src/firmware.S                         главная единица ассемблирования
@@ -18,6 +22,7 @@
 
 Тулзы
   tools/console.c                         интерактивная консоль USART
+  tools/trace_contract.h                  общий формат записей CSV-трасс и разбор строки записи
   tools/stress_commands.c                 автоматический стресс-клиент команд
   tools/analyze_udr_trace.c               анализ периодической трассы
   tools/analyze_stress_trace.c            анализ трассы под нагрузкой

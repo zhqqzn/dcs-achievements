@@ -41,14 +41,14 @@ build:
 	mkdir -p build
 
 # .S проходит C-препроцессор; подключённые .inc-файлы образуют одну единицу ассемблирования
-$(TARGET).elf: $(SRC) src/config.inc $(ASM_MODULES) | build
+$(TARGET).elf: $(SRC) src/config.inc src/protocol_contract.inc $(ASM_MODULES) | build
 	$(AVR_CC) -mmcu=$(MCU) -DF_CPU=$(F_CPU) -I src -x assembler-with-cpp -g -Os -Wall -Wextra $< -o $@
 
 $(TARGET).hex: $(TARGET).elf
 	$(AVR_OBJCOPY) -O ihex -R .eeprom $< $@
 
 # Вариант средней сложности: только периодические строки с равными интервалами
-$(TASK2_TARGET).elf: $(SRC) src/config.inc $(ASM_MODULES) | build
+$(TASK2_TARGET).elf: $(SRC) src/config.inc src/protocol_contract.inc $(ASM_MODULES) | build
 	$(AVR_CC) -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DTASK2_PERIODIC_ONLY=1 -DTIMER1_INTERVAL=16384 -DTIMER2_INTERVAL=16384 -I src -x assembler-with-cpp -g -Os -Wall -Wextra $< -o $@
 
 $(TASK2_TARGET).hex: $(TASK2_TARGET).elf
@@ -75,34 +75,34 @@ $(SIMAVR_PTY): tools/simavr_pty.c | build
 	@pkg-config --exists simavr simavrparts || { echo "Missing simavr development files; install libsimavr-dev"; exit 1; }
 	$(CC) $(HOST_CFLAGS) $(SIMAVR_CFLAGS) $< -o $@ $(SIMAVR_LIBS) -pthread -lutil
 
-$(SIMAVR_TRACE): tools/simavr_trace.c | build
+$(SIMAVR_TRACE): tools/simavr_trace.c tools/trace_contract.h src/protocol_contract.inc | build
 	@pkg-config --exists simavr simavrparts || { echo "Missing simavr development files; install libsimavr-dev"; exit 1; }
 	$(CC) $(HOST_CFLAGS) $(SIMAVR_CFLAGS) $< -o $@ $(SIMAVR_LIBS) -pthread -lutil
 
 # Диагностическая прошивка записывает маркеры расписания для проверки под нагрузкой
-$(STRESS_TARGET).elf: $(SRC) src/config.inc $(ASM_MODULES) | build
+$(STRESS_TARGET).elf: $(SRC) src/config.inc src/protocol_contract.inc $(ASM_MODULES) | build
 	$(AVR_CC) -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DTIMER1_INTERVAL=24064 -DTIMER2_INTERVAL=24064 -DTRACE_SCHEDULE=1 -I src -x assembler-with-cpp -g -Os -Wall -Wextra $< -o $@
 
-$(SIMAVR_STRESS_TRACE): tools/simavr_stress_trace.c | build
+$(SIMAVR_STRESS_TRACE): tools/simavr_stress_trace.c tools/trace_contract.h src/protocol_contract.inc | build
 	@pkg-config --exists simavr simavrparts || { echo "Missing simavr development files; install libsimavr-dev"; exit 1; }
 	$(CC) $(HOST_CFLAGS) $(SIMAVR_CFLAGS) $< -o $@ $(SIMAVR_LIBS) -pthread -lutil
 
-$(CONSOLE): tools/console.c | build
+$(CONSOLE): tools/console.c src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) $< -o $@
 
-$(STRESS_CLIENT): tools/stress_commands.c | build
+$(STRESS_CLIENT): tools/stress_commands.c src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) $< -o $@
 
-$(ANALYZE_UDR): tools/analyze_udr_trace.c | build
+$(ANALYZE_UDR): tools/analyze_udr_trace.c tools/trace_contract.h src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) $< -o $@
 
-$(ANALYZE_STRESS): tools/analyze_stress_trace.c | build
+$(ANALYZE_STRESS): tools/analyze_stress_trace.c tools/trace_contract.h src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) $< -o $@
 
-$(TEST_TOOLS): tools/test_tools.c tools/schedule_model.c tools/schedule_model.h | build
+$(TEST_TOOLS): tools/test_tools.c tools/schedule_model.c tools/schedule_model.h src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) -I tools tools/test_tools.c tools/schedule_model.c -lm -o $@
 
-$(TRACE_FIXTURE): tools/test_trace_fixture.c | build
+$(TRACE_FIXTURE): tools/test_trace_fixture.c tools/trace_contract.h src/protocol_contract.inc | build
 	$(CC) $(HOST_CFLAGS) $< -o $@
 
 # Запустите цель в первом терминале; после приглашения запустите клиента во втором

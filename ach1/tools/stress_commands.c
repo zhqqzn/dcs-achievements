@@ -18,6 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../src/protocol_contract.inc"
+
 #define MAX_TEXT "ABCDEFGHIJKLMNOPQRSTUV"
 #define RX_CAPACITY 8192U
 #define MAX_LINE 256U
@@ -27,7 +29,7 @@
 #define BASE_LINE_COUNT 2U
 #define MAX_ALLOWED_LINES 256U
 
-static const char *const base_lines[BASE_LINE_COUNT] = {"ping", "pong"};
+static const char *const base_lines[BASE_LINE_COUNT] = {UART_DEFAULT_STREAM1_TEXT, UART_DEFAULT_STREAM2_TEXT};
 
 typedef struct {
     char text[MAX_LINE];
@@ -121,7 +123,7 @@ static void classify_line(uart_client_t *client, const unsigned char *raw, size_
 {
     char line[MAX_LINE];
     size_t begin = 0U;
-    while (length > 0U && (raw[length - 1U] == '\r' || raw[length - 1U] == '\n' ||
+    while (length > 0U && (raw[length - 1U] == UART_COMMAND_END_CR || raw[length - 1U] == UART_LINE_FEED ||
                            raw[length - 1U] == ' ' || raw[length - 1U] == '\t')) --length;
     while (begin < length && (raw[begin] == ' ' || raw[begin] == '\t')) ++begin;
     length -= begin;
@@ -133,7 +135,7 @@ static void classify_line(uart_client_t *client, const unsigned char *raw, size_
     line[length] = '\0';
 
     /* Ответы команд хранятся отдельно от периодических строк, чтобы связать их с конкретной командой */
-    if (strcmp(line, "OK") == 0 || strcmp(line, "ERR") == 0) {
+    if (strcmp(line, UART_STATUS_OK_TEXT) == 0 || strcmp(line, UART_STATUS_ERR_TEXT) == 0) {
         if (client->status_count < MAX_STATUS_QUEUE) {
             size_t at = (client->status_head + client->status_count) % MAX_STATUS_QUEUE;
             (void)snprintf(client->statuses[at], sizeof(client->statuses[at]), "%s", line);
@@ -166,14 +168,14 @@ static void parse_rx(uart_client_t *client)
         size_t split = client->rx_length;
         unsigned char delimiter = 0U;
         for (size_t i = 0U; i < client->rx_length; ++i) {
-            if (client->rx[i] == '\r' || client->rx[i] == '\n') {
+            if (client->rx[i] == UART_COMMAND_END_CR || client->rx[i] == UART_LINE_FEED) {
                 split = i; delimiter = client->rx[i]; break;
             }
         }
         if (split == client->rx_length) return;
         classify_line(client, client->rx, split);
         size_t consumed = split + 1U;
-        if (delimiter == '\r' && consumed < client->rx_length && client->rx[consumed] == '\n') ++consumed;
+        if (delimiter == UART_COMMAND_END_CR && consumed < client->rx_length && client->rx[consumed] == UART_LINE_FEED) ++consumed;
         memmove(client->rx, client->rx + consumed, client->rx_length - consumed);
         client->rx_length -= consumed;
     }
@@ -278,7 +280,7 @@ static int client_command(uart_client_t *client, const char *command, const char
     if (length + 1U > sizeof(payload)) {
         fprintf(stderr, "FAIL: command too long\n"); return -1;
     }
-    memcpy(payload, command, length); payload[length] = '\r';
+    memcpy(payload, command, length); payload[length] = UART_COMMAND_END_CR;
     if (write_all(client, payload, length + 1U) != 0) return -1;
 
     /* Ожидаем первый ответ только до заданного дедлайна; ответы не сопоставляются по времени постфактум */
@@ -286,7 +288,7 @@ static int client_command(uart_client_t *client, const char *command, const char
     while (command_status_pop(client, status) == 0 && monotonic_seconds() < deadline) {
         if (pump(client, 0.05) != 0) return -1;
     }
-    if (status[0] == '\0' || (strcmp(status, "OK") != 0 && strcmp(status, "ERR") != 0)) {
+    if (status[0] == '\0' || (strcmp(status, UART_STATUS_OK_TEXT) != 0 && strcmp(status, UART_STATUS_ERR_TEXT) != 0)) {
         fprintf(stderr, "FAIL: no OK/ERR response for '%s' within %.1f s\n", command, client->status_timeout);
         return -1;
     }
@@ -295,7 +297,7 @@ static int client_command(uart_client_t *client, const char *command, const char
         fprintf(stderr, "FAIL: '%s': expected %s, got %s\n", command, expected_status, status);
         return -1;
     }
-    if (strcmp(status, "OK") == 0) ++client->ok_count; else ++client->err_count;
+    if (strcmp(status, UART_STATUS_OK_TEXT) == 0) ++client->ok_count; else ++client->err_count;
 
     if (expected_output != NULL) {
         deadline = monotonic_seconds() + client->line_timeout;
@@ -346,12 +348,12 @@ static void summary(const uart_client_t *client)
     printf("Commands: %lu; OK: %lu; ERR: %lu\n", client->commands_sent, client->ok_count, client->err_count);
     for (size_t i = 0U; i < client->data_count; ++i) {
         total += client->data[i].count;
-        if (strcmp(client->data[i].text, "ping") != 0 && strcmp(client->data[i].text, "pong") != 0)
+        if (strcmp(client->data[i].text, UART_DEFAULT_STREAM1_TEXT) != 0 && strcmp(client->data[i].text, UART_DEFAULT_STREAM2_TEXT) != 0)
             ++custom;
     }
     printf("Observed output lines: %lu\n", total);
-    printf("ping=%lu pong=%lu\n", data_count((uart_client_t *)client, "ping"),
-           data_count((uart_client_t *)client, "pong"));
+    printf("ping=%lu pong=%lu\n", data_count((uart_client_t *)client, UART_DEFAULT_STREAM1_TEXT),
+           data_count((uart_client_t *)client, UART_DEFAULT_STREAM2_TEXT));
     printf("Distinct custom lines observed: %zu\n", custom);
     if (client->initial_fragments_ignored)
         printf("Partial PTY-attach fragments ignored: %lu\n", client->initial_fragments_ignored);
@@ -367,7 +369,7 @@ static void summary(const uart_client_t *client)
 /* Сценарий проверяет обновление пары периодов, отказ недопустимых параметров и изменение строк на ходу */
 static int run_scenario(uart_client_t *client, unsigned repeat)
 {
-    static const char *const bases[] = {"ping", "pong"};
+    static const char *const bases[] = {UART_DEFAULT_STREAM1_TEXT, UART_DEFAULT_STREAM2_TEXT};
     static const char *const left_right[] = {"left", "right"};
     static const char *const active_long2[] = {"left", "ABCDEFGHIJ"};
     char max_text[] = MAX_TEXT;
@@ -377,58 +379,58 @@ static int run_scenario(uart_client_t *client, unsigned repeat)
     unsigned long before_ping, before_pong;
 
     /* Сначала выбираем допустимую конфигурацию, кратную шагу Timer2=128 тактов. */
-    if (client_command(client, "T=30080,30080", "OK", NULL, NULL, 0U, bases, 2U) != 0) return -1;
-    if (client_command(client, "S1=left", "OK", "left", NULL, 0U, NULL, 0U) != 0) return -1;
-    if (client_command(client, "S2=right", "OK", "right", NULL, 0U, NULL, 0U) != 0) return -1;
-    if (client_command(client, "T=25023,25023", "ERR", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
-    if (client_command(client, "T=25088,25088", "OK", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "30080,30080", UART_STATUS_OK_TEXT, NULL, NULL, 0U, bases, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM1_PREFIX "left", UART_STATUS_OK_TEXT, "left", NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM2_PREFIX "right", UART_STATUS_OK_TEXT, "right", NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "25023,25023", UART_STATUS_ERR_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "25088,25088", UART_STATUS_OK_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
 
     /* Timer1 может быть длиннее Timer2, но период Timer2 ограничен 32768 тактами. */
-    if (client_command(client, "T=50176,25088", "OK", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "50176,25088", UART_STATUS_OK_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
 
     /* Максимальная строка синтаксически корректна, но не помещается в расписание Timer2. */
-    (void)snprintf(command, sizeof(command), "S1=%s", max_text);
-    if (client_command(client, command, "ERR", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
-    (void)snprintf(command, sizeof(command), "S2=%s", max_text);
-    if (client_command(client, command, "ERR", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    (void)snprintf(command, sizeof(command), UART_COMMAND_STREAM1_PREFIX "%s", max_text);
+    if (client_command(client, command, UART_STATUS_ERR_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    (void)snprintf(command, sizeof(command), UART_COMMAND_STREAM2_PREFIX "%s", max_text);
+    if (client_command(client, command, UART_STATUS_ERR_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
 
     /* Проверить допустимую более длинную строку в потоке 2 на максимальном периоде Timer2. */
-    if (client_command(client, "T=32768,32768", "OK", NULL, NULL, 0U, left_right, 2U) != 0) return -1;
-    if (client_command(client, "S2=ABCDEFGHIJ", "OK", "ABCDEFGHIJ", NULL, 0U, NULL, 0U) != 0) return -1;
-    if (client_command(client, command, "ERR", NULL, NULL, 0U, active_long2, 2U) != 0) return -1;
-    if (client_command(client, "S2=right", "OK", "right", NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "32768,32768", UART_STATUS_OK_TEXT, NULL, NULL, 0U, left_right, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM2_PREFIX "ABCDEFGHIJ", UART_STATUS_OK_TEXT, "ABCDEFGHIJ", NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, command, UART_STATUS_ERR_TEXT, NULL, NULL, 0U, active_long2, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM2_PREFIX "right", UART_STATUS_OK_TEXT, "right", NULL, 0U, NULL, 0U) != 0) return -1;
 
     for (unsigned i = 0U; i < repeat; ++i) {
         (void)snprintf(text1, sizeof(text1), "alpha%02u", i);
         (void)snprintf(text2, sizeof(text2), "bravo%02u", i);
-        (void)snprintf(command, sizeof(command), "S1=%s", text1);
-        if (client_command(client, command, "OK", text1, NULL, 0U, NULL, 0U) != 0) return -1;
+        (void)snprintf(command, sizeof(command), UART_COMMAND_STREAM1_PREFIX "%s", text1);
+        if (client_command(client, command, UART_STATUS_OK_TEXT, text1, NULL, 0U, NULL, 0U) != 0) return -1;
         (void)snprintf(active1, sizeof(active1), "%s", text1);
-        (void)snprintf(command, sizeof(command), "S2=%s", text2);
-        if (client_command(client, command, "OK", text2, NULL, 0U, NULL, 0U) != 0) return -1;
+        (void)snprintf(command, sizeof(command), UART_COMMAND_STREAM2_PREFIX "%s", text2);
+        if (client_command(client, command, UART_STATUS_OK_TEXT, text2, NULL, 0U, NULL, 0U) != 0) return -1;
         (void)snprintf(active2, sizeof(active2), "%s", text2);
         unsigned period = 32000U + (i & 1U) * 128U;
-        (void)snprintf(command, sizeof(command), "T=%u,%u", period, period);
+        (void)snprintf(command, sizeof(command), UART_COMMAND_TIMER_PAIR_PREFIX "%u,%u", period, period);
         const char *const active[] = {active1, active2};
-        if (client_command(client, command, "OK", NULL, NULL, 0U, active, 2U) != 0) return -1;
+        if (client_command(client, command, UART_STATUS_OK_TEXT, NULL, NULL, 0U, active, 2U) != 0) return -1;
     }
 
-    if (client_command(client, "S1=ABCDEFGHIJKLMNOPQRSTUVW", "ERR", NULL, NULL, 0U,
+    if (client_command(client, UART_COMMAND_STREAM1_PREFIX "ABCDEFGHIJKLMNOPQRSTUVW", UART_STATUS_ERR_TEXT, NULL, NULL, 0U,
                        (const char *const[]){active1, active2}, 2U) != 0) return -1;
-    if (client_command(client, "X", "ERR", NULL, NULL, 0U,
+    if (client_command(client, "X", UART_STATUS_ERR_TEXT, NULL, NULL, 0U,
                        (const char *const[]){active1, active2}, 2U) != 0) return -1;
-    if (client_command(client, "S1=ping", "OK", "ping", NULL, 0U, NULL, 0U) != 0) return -1;
-    if (client_command(client, "S2=pong", "OK", "pong", NULL, 0U, NULL, 0U) != 0) return -1;
-    if (client_command(client, "T=23680,23680", "OK", NULL, NULL, 0U, bases, 2U) != 0) return -1;
-    before_ping = data_count(client, "ping"); before_pong = data_count(client, "pong");
-    if (client_command(client, "RESTART", "OK", NULL, NULL, 0U, bases, 2U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM1_PREFIX UART_DEFAULT_STREAM1_TEXT, UART_STATUS_OK_TEXT, UART_DEFAULT_STREAM1_TEXT, NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_STREAM2_PREFIX UART_DEFAULT_STREAM2_TEXT, UART_STATUS_OK_TEXT, UART_DEFAULT_STREAM2_TEXT, NULL, 0U, NULL, 0U) != 0) return -1;
+    if (client_command(client, UART_COMMAND_TIMER_PAIR_PREFIX "23680,23680", UART_STATUS_OK_TEXT, NULL, NULL, 0U, bases, 2U) != 0) return -1;
+    before_ping = data_count(client, UART_DEFAULT_STREAM1_TEXT); before_pong = data_count(client, UART_DEFAULT_STREAM2_TEXT);
+    if (client_command(client, UART_COMMAND_RESTART_TEXT, UART_STATUS_OK_TEXT, NULL, NULL, 0U, bases, 2U) != 0) return -1;
     double deadline = monotonic_seconds() + client->line_timeout;
-    while ((data_count(client, "ping") <= before_ping || data_count(client, "pong") <= before_pong) &&
+    while ((data_count(client, UART_DEFAULT_STREAM1_TEXT) <= before_ping || data_count(client, UART_DEFAULT_STREAM2_TEXT) <= before_pong) &&
            monotonic_seconds() < deadline) {
         if (client->status_count > 0U) { fprintf(stderr, "FAIL: unexpected status after RESTART\n"); return -1; }
         if (pump(client, 0.05) != 0) return -1;
     }
-    if (data_count(client, "ping") <= before_ping || data_count(client, "pong") <= before_pong) {
+    if (data_count(client, UART_DEFAULT_STREAM1_TEXT) <= before_ping || data_count(client, UART_DEFAULT_STREAM2_TEXT) <= before_pong) {
         fprintf(stderr, "FAIL: both ping and pong were not observed after RESTART\n"); return -1;
     }
     return 0;

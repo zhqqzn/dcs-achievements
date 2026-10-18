@@ -27,6 +27,8 @@
 #include <simavr/sim_irq.h>
 #include <simavr/parts/uart_pty.h>
 
+#include "trace_contract.h"
+
 #define CPU_HZ 16000000UL
 /* Адреса ATmega8 в пространстве данных: UDR=0x2c, TCNT1L/H=0x4c/0x4d,
    TCCR1B=0x4e, PORTC=0x35. */
@@ -35,9 +37,6 @@
 #define ATMEGA8_TCNT1H_DATA_ADDR 0x4d
 #define ATMEGA8_TCCR1B_DATA_ADDR 0x4e
 #define ATMEGA8_PORTC_DATA_ADDR 0x35
-#define TRACE_MARKER 0xa5u
-#define TRACE_FRAME_FIELDS 8u
-#define TRACE_MAX_LINE 24u
 
 struct trace_context {
     avr_t *avr;
@@ -46,7 +45,7 @@ struct trace_context {
     uint64_t start_cycle;
     int marker_active;
     unsigned fields_seen;
-    uint8_t fields[TRACE_FRAME_FIELDS];
+    uint8_t fields[TRACE_SCHEDULE_FIELD_COUNT];
     unsigned payload_left;
     unsigned trace_errors;
 };
@@ -68,12 +67,12 @@ static void
 trace_portc_byte(struct trace_context *ctx, uint64_t cycle, uint8_t byte)
 {
     /* A5 начинает кадр метаданных; обычная запись PORTC не считается новым снимком */
-    if (!ctx->marker_active && byte == TRACE_MARKER) {
+    if (!ctx->marker_active && byte == TRACE_SCHEDULE_MARKER) {
         /* Timer1 считает непрерывно с делителем 1 от записанного момента запуска.
            Вычисляем значение по общему счётчику циклов, а не по зеркалу data[], которое может отставать */
         uint16_t live_count = (uint16_t)(cycle - ctx->start_cycle);
-        write_record(ctx, 'E', cycle, live_count);
-        write_record(ctx, 'P', cycle, byte);
+        write_record(ctx, TRACE_KIND_EPOCH_MARKER, cycle, live_count);
+        write_record(ctx, TRACE_KIND_PORTC_WRITE, cycle, byte);
         ctx->marker_active = 1;
         ctx->fields_seen = 0;
         ctx->payload_left = 0;
@@ -85,13 +84,13 @@ trace_portc_byte(struct trace_context *ctx, uint64_t cycle, uint8_t byte)
         ctx->trace_errors++;
         return;
     }
-    write_record(ctx, 'P', cycle, byte);
-    if (ctx->fields_seen < TRACE_FRAME_FIELDS) {
+    write_record(ctx, TRACE_KIND_PORTC_WRITE, cycle, byte);
+    if (ctx->fields_seen < TRACE_SCHEDULE_FIELD_COUNT) {
         ctx->fields[ctx->fields_seen++] = byte;
-        if (ctx->fields_seen == TRACE_FRAME_FIELDS) {
+        if (ctx->fields_seen == TRACE_SCHEDULE_FIELD_COUNT) {
             unsigned len1 = ctx->fields[6];
             unsigned len2 = ctx->fields[7];
-            if (len1 > TRACE_MAX_LINE || len2 > TRACE_MAX_LINE || len1 < 2 || len2 < 2) {
+            if (len1 > TRACE_MAX_SCHEDULE_LINE_BYTES || len2 > TRACE_MAX_SCHEDULE_LINE_BYTES || len1 < 2 || len2 < 2) {
                 fprintf(stderr, "Invalid schedule marker string lengths: %u, %u\n", len1, len2);
                 ctx->marker_active = 0;
                 ctx->trace_errors++;
@@ -120,11 +119,11 @@ trace_register_write(avr_t *avr, avr_io_addr_t addr, uint8_t value, void *param)
     struct trace_context *ctx = tag->ctx;
     uint64_t cycle = (uint64_t)avr->cycle;
 
-    if (tag->kind == 'U') {
+    if (tag->kind == TRACE_KIND_UDR_WRITE) {
         /* UDR читается при приёме и записывается при передаче. Обработчик записи
            фиксирует только запись CPU, то есть нужное нам событие OUT UDR */
-        write_record(ctx, 'U', cycle, value);
-    } else if (tag->kind == 'P') {
+        write_record(ctx, TRACE_KIND_UDR_WRITE, cycle, value);
+    } else if (tag->kind == TRACE_KIND_PORTC_WRITE) {
         trace_portc_byte(ctx, cycle, value);
     }
 }
@@ -138,10 +137,10 @@ trace_io_irq(struct avr_irq_t *irq, uint32_t value, void *param)
     struct trace_context *ctx = tag->ctx;
     uint64_t cycle = (uint64_t)ctx->avr->cycle;
 
-    if (tag->kind == 'S' && !ctx->saw_start && (value & 0x07u) == 0x01u) {
+    if (tag->kind == TRACE_KIND_TIMER1_START && !ctx->saw_start && (value & 0x07u) == 0x01u) {
         ctx->saw_start = 1;
         ctx->start_cycle = cycle;
-        write_record(ctx, 'S', cycle, value);
+        write_record(ctx, TRACE_KIND_TIMER1_START, cycle, value);
     }
 }
 
@@ -204,12 +203,12 @@ main(int argc, char **argv)
         avr_terminate(avr);
         return 1;
     }
-    fputs("kind,cycle,value\n", out);
+    fprintf(out, "%s\n", TRACE_CSV_HEADER);
 
     struct trace_context ctx = { .avr = avr, .out = out };
-    trace_tag_t start_tag = { .ctx = &ctx, .kind = 'S' };
-    trace_tag_t udr_tag = { .ctx = &ctx, .kind = 'U' };
-    trace_tag_t portc_tag = { .ctx = &ctx, .kind = 'P' };
+    trace_tag_t start_tag = { .ctx = &ctx, .kind = TRACE_KIND_TIMER1_START };
+    trace_tag_t udr_tag = { .ctx = &ctx, .kind = TRACE_KIND_UDR_WRITE };
+    trace_tag_t portc_tag = { .ctx = &ctx, .kind = TRACE_KIND_PORTC_WRITE };
     avr_irq_t *start_irq = avr_iomem_getirq(avr, ATMEGA8_TCCR1B_DATA_ADDR,
                                             "trace.TCCR1B", AVR_IOMEM_IRQ_ALL);
     if (start_irq == NULL) {

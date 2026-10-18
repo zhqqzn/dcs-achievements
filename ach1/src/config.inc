@@ -1,3 +1,5 @@
+#include "protocol_contract.inc"
+
 /*
  * Конфиг ATmega8.
  * При 16 МГц, U2X=1 и UBRR=16 фактическая скорость USART ок. 117647 бод.
@@ -16,9 +18,9 @@
 #define UART_BAUD_REQUESTED 115200
 #define UART_U2X_VALUE 1
 
-#define MAX_STR_LEN 24           /* Максимум передаваемых байтов вместе с CR/LF; завершающий NUL сюда не входит. */
-#define MAX_TEXT_LEN 22          /* Максимум символов текста команды без завершающих CR/LF. */
-#define COMMAND_MAX 31
+#define MAX_STR_LEN UART_OUTPUT_LINE_MAX_BYTES /* Передаваемые байты с CR/LF, без завершающего NUL. */
+#define MAX_TEXT_LEN UART_USER_TEXT_MAX_BYTES /* Максимум символов пользовательского текста. */
+#define COMMAND_MAX UART_COMMAND_MAX_BYTES
 
 #define EVENT_QUEUE_SIZE 8
 #define EVENT_QUEUE_MASK 7
@@ -27,11 +29,10 @@
 #define EV_ERROR 4
 
 /* Временные константы рассчитаны для 16 МГц, U2X=1 и UBRR=16. */
-#define UART_FRAME_CYCLES 1360   /* Кадр 8N1 содержит 10 бит; каждый бит занимает 136 тактов CPU. */
-#define STATUS_MAX_LEN 5        /* Длина ответа ERR с CR/LF. */
-#define STATUS_TX_CYCLES 6800   /* Пять кадров по 1360 тактов на байт. */
-#define OUTPUT_GUARD_CYCLES 32  /* Минимальный защитный промежуток между периодическими строками. */
-#define CONTROL_SLOT_SETUP 512  /* Резерв на планирование и запуск ответа OK/ERR. */
+#define STATUS_MAX_LEN UART_STATUS_ERR_FRAME_BYTES /* Длина ответа ERR с CR/LF. */
+#define STATUS_TX_CYCLES UART_STATUS_TX_CYCLES /* Передача максимального ответа ERR с CR/LF. */
+#define OUTPUT_GUARD_CYCLES UART_OUTPUT_GUARD_CYCLES /* Минимальный защитный промежуток между периодическими строками. */
+#define CONTROL_SLOT_SETUP UART_CONTROL_SLOT_SETUP_CYCLES /* Резерв на планирование и запуск ответа OK/ERR. */
 #define CONTROL_CHECK_AHEAD 128 /* Минимальный запас до ближайшего compare перед отправкой ответа. */
 #define COMMIT_CHECK_AHEAD 1024 /* Не изменять расписание ближе этого расстояния до следующего compare. */
 

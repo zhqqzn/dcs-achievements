@@ -20,6 +20,8 @@
 #include <simavr/sim_io.h>
 #include <simavr/sim_irq.h>
 
+#include "trace_contract.h"
+
 #define CPU_HZ 16000000UL
 /* Адреса регистров ATmega8 в пространстве данных: UDR=0x2c, TCCR1B=0x4e */
 #define ATMEGA8_UDR_DATA_ADDR 0x2c
@@ -45,15 +47,15 @@ trace_io_irq(struct avr_irq_t *irq, uint32_t value, void *param)
     trace_context_t *ctx = tag->ctx;
     uint64_t cycle = (uint64_t)ctx->avr->cycle;
 
-    if (tag->kind == 'S') {
+    if (tag->kind == TRACE_KIND_TIMER1_START) {
         /* Фиксируем первую запись, включающую тактирование Timer1 (CS10=1). */
         if (!ctx->saw_start && (value & 0x07u) == 0x01u) {
             ctx->saw_start = 1;
-            fprintf(ctx->out, "S,\"%" PRIu64 "\",%u\n", cycle, (unsigned)(value & 0xffu));
+            fprintf(ctx->out, "%c,\"%" PRIu64 "\",%u\n", TRACE_KIND_TIMER1_START, cycle, (unsigned)(value & 0xffu));
             fflush(ctx->out);
         }
-    } else {
-        fprintf(ctx->out, "U,\"%" PRIu64 "\",%u\n", cycle, (unsigned)(value & 0xffu));
+    } else if (tag->kind == TRACE_KIND_UDR_WRITE) {
+        fprintf(ctx->out, "%c,\"%" PRIu64 "\",%u\n", TRACE_KIND_UDR_WRITE, cycle, (unsigned)(value & 0xffu));
     }
 }
 
@@ -101,12 +103,12 @@ main(int argc, char **argv)
         avr_terminate(avr);
         return 1;
     }
-    fputs("kind,cycle,value\n", out);
+    fprintf(out, "%s\n", TRACE_CSV_HEADER);
 
     /* Контекст и отдельные метки позволяют одному обработчику различать Timer1 и UDR */
     trace_context_t ctx = { .avr = avr, .out = out, .saw_start = 0 };
-    trace_tag_t start_tag = { .ctx = &ctx, .kind = 'S' };
-    trace_tag_t udr_tag = { .ctx = &ctx, .kind = 'U' };
+    trace_tag_t start_tag = { .ctx = &ctx, .kind = TRACE_KIND_TIMER1_START };
+    trace_tag_t udr_tag = { .ctx = &ctx, .kind = TRACE_KIND_UDR_WRITE };
     avr_irq_t *start_irq = avr_iomem_getirq(avr, ATMEGA8_TCCR1B_DATA_ADDR,
                                             "trace.TCCR1B", AVR_IOMEM_IRQ_ALL);
     avr_irq_t *udr_irq = avr_iomem_getirq(avr, ATMEGA8_UDR_DATA_ADDR,
