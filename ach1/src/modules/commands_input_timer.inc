@@ -75,12 +75,12 @@ parse_timer1:
     BREQ_LONG command_error /* расширенный переход при Z=1; цель — command_error. */
     sts pair_value1, r24 /* сохранить pair_value1 в SRAM (r24). */
     sts pair_value1+1, r25 /* сохранить pair_value1+1 в SRAM (r25). */
-    sts test_t1, r24 /* сохранить test_t1 в SRAM (r24). */
-    sts test_t1+1, r25 /* сохранить test_t1+1 в SRAM (r25). */
+    sts request_t1, r24 /* сохранить request_t1 в SRAM (r24). */
+    sts request_t1+1, r25 /* сохранить request_t1+1 в SRAM (r25). */
     lds r18, candidate_t2 /* прочитать из SRAM кандидатный период T2 в r18. */
-    sts test_t2, r18 /* сохранить test_t2 в SRAM (r18). */
+    sts request_t2, r18 /* сохранить request_t2 в SRAM (r18). */
     lds r18, candidate_t2+1 /* прочитать из SRAM кандидатный период T2 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t2+1, r18 /* сохранить test_t2+1 в SRAM (r18). */
+    sts request_t2+1, r18 /* сохранить request_t2+1 в SRAM (r18). */
     rjmp parse_timer_validate /* безусловно передать управление на метку parse_timer_validate; выполнение продолжится с указанной метки. */
 
 parse_timer2:
@@ -95,11 +95,11 @@ parse_timer2:
     sts pair_value2, r24 /* сохранить pair_value2 в SRAM (r24). */
     sts pair_value2+1, r25 /* сохранить pair_value2+1 в SRAM (r25). */
     lds r18, candidate_t1 /* прочитать из SRAM кандидатный период T1 в r18. */
-    sts test_t1, r18 /* сохранить test_t1 в SRAM (r18). */
+    sts request_t1, r18 /* сохранить request_t1 в SRAM (r18). */
     lds r18, candidate_t1+1 /* прочитать из SRAM кандидатный период T1 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t1+1, r18 /* сохранить test_t1+1 в SRAM (r18). */
-    sts test_t2, r24 /* сохранить test_t2 в SRAM (r24). */
-    sts test_t2+1, r25 /* сохранить test_t2+1 в SRAM (r25). */
+    sts request_t1+1, r18 /* сохранить request_t1+1 в SRAM (r18). */
+    sts request_t2, r24 /* сохранить request_t2 в SRAM (r24). */
+    sts request_t2+1, r25 /* сохранить request_t2+1 в SRAM (r25). */
     rjmp parse_timer_validate /* безусловно передать управление на метку parse_timer_validate; выполнение продолжится с указанной метки. */
 
 parse_timer_pair:
@@ -107,28 +107,34 @@ parse_timer_pair:
     tst r23 /* проверить r23 без изменения самого регистра; результат задаёт флаги Z/N. */
     BREQ_LONG command_error /* расширенный переход при Z=1; цель — command_error. */
     lds r18, pair_value1 /* прочитать из SRAM первое число пары в r18. */
-    sts test_t1, r18 /* сохранить test_t1 в SRAM (r18). */
+    sts request_t1, r18 /* сохранить request_t1 в SRAM (r18). */
     lds r18, pair_value1+1 /* прочитать из SRAM первое число пары в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t1+1, r18 /* сохранить test_t1+1 в SRAM (r18). */
+    sts request_t1+1, r18 /* сохранить request_t1+1 в SRAM (r18). */
     lds r18, pair_value2 /* прочитать из SRAM второе число пары в r18. */
-    sts test_t2, r18 /* сохранить test_t2 в SRAM (r18). */
+    sts request_t2, r18 /* сохранить request_t2 в SRAM (r18). */
     lds r18, pair_value2+1 /* прочитать из SRAM второе число пары в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t2+1, r18 /* сохранить test_t2+1 в SRAM (r18). */
+    sts request_t2+1, r18 /* сохранить request_t2+1 в SRAM (r18). */
 
 parse_timer_validate:
-    lds r18, candidate_str1_len /* прочитать из SRAM длина строки-кандидата 1 в r18. */
-    sts test_len1, r18 /* сохранить test_len1 в SRAM (r18). */
-    lds r18, candidate_str2_len /* прочитать из SRAM длина строки-кандидата 2 в r18. */
-    sts test_len2, r18 /* сохранить test_len2 в SRAM (r18). */
-    rcall config_validate /* вызвать подпрограмму config_validate — проверить, помещаются ли периодические строки и служебный ответ в доступные непересекающиеся окна. */
+    lds r18, candidate_str1_len
+    sts request_len1, r18
+    lds r18, candidate_str2_len
+    sts request_len2, r18
+    lds r24, request_t1
+    lds r25, request_t1+1
+    lds r22, request_t2
+    lds r23, request_t2+1
+    lds r21, request_len1
+    lds r20, request_len2
+    rcall config_validate /* Проверить снимок запроса через регистровый интерфейс. */
     tst r24 /* проверить r24 без изменения самого регистра; результат задаёт флаги Z/N. */
     BREQ_LONG command_error /* расширенный переход при Z=1; цель — command_error. */
-    lds r18, test_t1 /* прочитать из SRAM тестовый T1 в r18. */
+    lds r18, request_t1 /* прочитать из SRAM запрашиваемый T1 в r18. */
     sts candidate_t1, r18 /* сохранить candidate_t1 в SRAM (r18). */
-    lds r18, test_t1+1 /* прочитать из SRAM тестовый T1 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
+    lds r18, request_t1+1 /* прочитать из SRAM запрашиваемый T1 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
     sts candidate_t1+1, r18 /* сохранить candidate_t1+1 в SRAM (r18). */
-    lds r18, test_t2 /* прочитать из SRAM тестовый T2 в r18. */
+    lds r18, request_t2 /* прочитать из SRAM запрашиваемый T2 в r18. */
     sts candidate_t2, r18 /* сохранить candidate_t2 в SRAM (r18). */
-    lds r18, test_t2+1 /* прочитать из SRAM тестовый T2 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
+    lds r18, request_t2+1 /* прочитать из SRAM запрашиваемый T2 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
     sts candidate_t2+1, r18 /* сохранить candidate_t2+1 в SRAM (r18). */
     rjmp command_accept_restart /* безусловно передать управление на метку command_accept_restart; выполнение продолжится с указанной метки. */

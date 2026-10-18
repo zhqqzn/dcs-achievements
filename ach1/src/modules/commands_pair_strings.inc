@@ -95,29 +95,27 @@ parse_string_append_crlf:
     sts temp_string_len, r18 /* сохранить temp_string_len в SRAM (r18). */
 
     /* Проверить кандидатные интервалы с новой длиной строки до фиксации изменения. */
-    lds r18, candidate_t1 /* прочитать из SRAM кандидатный период T1 в r18. */
-    sts test_t1, r18 /* сохранить test_t1 в SRAM (r18). */
-    lds r18, candidate_t1+1 /* прочитать из SRAM кандидатный период T1 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t1+1, r18 /* сохранить test_t1+1 в SRAM (r18). */
-    lds r18, candidate_t2 /* прочитать из SRAM кандидатный период T2 в r18. */
-    sts test_t2, r18 /* сохранить test_t2 в SRAM (r18). */
-    lds r18, candidate_t2+1 /* прочитать из SRAM кандидатный период T2 в r18; смещение 1 выбирает следующий байт многобайтного значения. */
-    sts test_t2+1, r18 /* сохранить test_t2+1 в SRAM (r18). */
     lds r18, cmd_buffer+1 /* прочитать из SRAM буфер команды в r18; смещение 1 выбирает следующий байт многобайтного значения. */
     cpi r18, '1' /* сравнить r18 с код символа '1', не сохраняя результат вычитания; далее проверяются флаги. */
     brne parse_string_test_2 /* если Z=0 (результат не равен нулю): перейти к parse_string_test_2. */
     lds r18, temp_string_len /* прочитать из SRAM длина временной строки в r18. */
-    sts test_len1, r18 /* сохранить test_len1 в SRAM (r18). */
+    sts request_len1, r18 /* сохранить request_len1 в SRAM (r18). */
     lds r18, candidate_str2_len /* прочитать из SRAM длина строки-кандидата 2 в r18. */
-    sts test_len2, r18 /* сохранить test_len2 в SRAM (r18). */
+    sts request_len2, r18 /* сохранить request_len2 в SRAM (r18). */
     rjmp parse_string_validate /* безусловно передать управление на метку parse_string_validate; выполнение продолжится с указанной метки. */
 parse_string_test_2:
     lds r18, candidate_str1_len /* прочитать из SRAM длина строки-кандидата 1 в r18. */
-    sts test_len1, r18 /* сохранить test_len1 в SRAM (r18). */
+    sts request_len1, r18 /* сохранить request_len1 в SRAM (r18). */
     lds r18, temp_string_len /* прочитать из SRAM длина временной строки в r18. */
-    sts test_len2, r18 /* сохранить test_len2 в SRAM (r18). */
+    sts request_len2, r18 /* сохранить request_len2 в SRAM (r18). */
 parse_string_validate:
-    rcall config_validate /* вызвать подпрограмму config_validate — проверить, помещаются ли периодические строки и служебный ответ в доступные непересекающиеся окна. */
+    lds r24, candidate_t1
+    lds r25, candidate_t1+1
+    lds r22, candidate_t2
+    lds r23, candidate_t2+1
+    lds r21, request_len1
+    lds r20, request_len2
+    rcall config_validate /* Проверить интервалы и предложенные длины через регистровый интерфейс. */
     tst r24 /* проверить r24 без изменения самого регистра; результат задаёт флаги Z/N. */
     brne parse_string_commit /* если Z=0 (результат не равен нулю): перейти к parse_string_commit. */
     rjmp command_error /* безусловно передать управление на метку command_error; выполнение продолжится с указанной метки. */
