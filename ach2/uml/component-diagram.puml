@@ -1,0 +1,48 @@
+@startuml
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+actor "Клиент" as Client
+component "Веб-сервер\nNginx\nобратный прокси" as Web
+
+package "Сервер приложений: C++ / Drogon" as App {
+  component "IncrementController\nHTTP-адаптер" as Controller
+  interface "INumberService" as IService
+  component "NumberService\nправила обработки" as Service
+  interface "INumberRepository" as IRepository
+  component "PostgresNumberRepository\nадаптер хранения" as PgRepository
+
+  Controller ..> IService : вызывает
+  Service ..|> IService : реализует
+  Service ..> IRepository : использует
+  PgRepository ..|> IRepository : реализует
+}
+
+database "PostgreSQL\nrequest_state\nrequest_history\nprocessed_numbers" as DB
+component "stdout\nжурнал приложения" as Stdout
+
+Client --> Web : HTTP
+Web --> Controller : HTTP /api/increment
+PgRepository --> DB : TCP/IP + SQL
+Controller ..> Stdout : HTTP-ошибки и ошибки ввода
+Service ..> Stdout : бизнес-события и ошибки БД
+
+note bottom of IService
+Контракт сценария приложения.
+Не содержит HTTP-типов или типов Drogon.
+end note
+
+note bottom of IRepository
+Контракт транзакционных операций.
+Другой адаптер должен сохранить атомарность
+проверки и изменения состояния.
+end note
+
+note bottom of DB
+request_state: строка для сериализации операций.
+request_history: все корректные входы.
+processed_numbers: только успешные входы.
+end note
+@enduml

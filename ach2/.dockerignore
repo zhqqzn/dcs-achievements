@@ -1,0 +1,11 @@
+.env
+.git
+build/
+cmake-build-*/
+__pycache__/
+*.pyc
+uml/
+database/
+nginx/
+README.md
+compose.yaml

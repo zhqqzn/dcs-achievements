@@ -1,0 +1,112 @@
+@startuml
+hide footbox
+autonumber
+actor "Клиент" as Client
+participant "Nginx" as Web
+participant "IncrementController" as Controller
+participant "INumberService\n(NumberService)" as Service
+participant "INumberRepository / INumberTransaction\n(PostgresNumberRepository)" as Repository
+database "PostgreSQL" as DB
+
+Client -> Web : POST /api/increment\nтело: n
+Web -> Controller : Передать HTTP-запрос
+Controller -> Controller : Проверить HTTP-метод\nи десятичный формат тела
+
+alt Метод не POST
+  Controller -> Controller : ERROR METHOD_NOT_ALLOWED в stdout
+  Controller --> Web : HTTP 405 METHOD_NOT_ALLOWED
+else Тело не является целым числом
+  Controller -> Controller : ERROR INVALID_NUMBER в stdout
+  Controller --> Web : HTTP 400 INVALID_NUMBER
+else Формат корректен
+  Controller -> Service : processNumber(n)
+  alt n вне настроенного диапазона
+    Service -> Service : ERROR NUMBER_OUT_OF_RANGE в stdout
+    Service --> Controller : NumberOutOfRange
+    Controller --> Web : HTTP 400 NUMBER_OUT_OF_RANGE
+  else n в диапазоне
+    Service -> Repository : beginTransaction()
+    Repository -> DB : Начать транзакцию через Drogon
+    DB --> Repository : Transaction
+    Repository --> Service : INumberTransaction
+    Service -> Repository : lockProcessingState()
+    Repository -> DB : SELECT id FROM request_state\nWHERE id = 1 FOR UPDATE
+    DB --> Repository : Строка заблокирована / отсутствует
+
+    alt Строка состояния отсутствует
+      Repository --> Service : state row missing
+      Service -> Repository : rollback()
+      Repository -> DB : ROLLBACK
+      Service -> Service : ERROR DATABASE_SCHEMA_INVALID в stdout
+      Service --> Controller : DatabaseError
+      Controller --> Web : HTTP 503 SERVICE_UNAVAILABLE
+    else Строка состояния найдена
+      alt Все SQL-операции выполнены успешно
+        Service -> Repository : hasReceived(n)
+        Repository -> DB : SELECT request_history WHERE input_value = n
+        DB --> Repository : Найдено / не найдено
+        Repository --> Service : bool
+
+        alt n уже поступало (исключение № 1)
+          Service -> Service : Подготовить DUPLICATE_NUMBER
+        else n ещё не поступало
+          Service -> Repository : recordReceived(n)
+          Repository -> DB : INSERT request_history(n)
+          DB --> Repository : OK
+          Repository --> Service : OK
+          Service -> Repository : hasProcessed(n + 1)
+          Repository -> DB : SELECT processed_numbers\nWHERE input_value = n + 1
+          DB --> Repository : Найдено / не найдено
+          Repository --> Service : bool
+
+          alt n + 1 уже обработано (исключение № 2)
+            Service -> Service : Подготовить PREDECESSOR_OF_PROCESSED_NUMBER
+          else n + 1 ещё не обработано
+            Service -> Repository : recordProcessed(n)
+            Repository -> DB : INSERT processed_numbers(n)
+            DB --> Repository : OK
+            Repository --> Service : OK
+            Service -> Service : Подготовить результат n + 1
+          end
+        end
+
+        Service -> Repository : commit(callback)
+        note over Repository,DB
+          Адаптер Drogon регистрирует setCommitCallback
+          и освобождает свою ссылку на Transaction.
+          Фиксация выполняется при уничтожении Transaction;
+          callback сообщает результат фиксации.
+        end note
+        Repository -> DB : COMMIT
+        DB --> Repository : Результат commit callback
+
+        alt Транзакция зафиксирована
+          Repository --> Service : commit successful
+          Service -> Service : Записать INFO/ERROR в stdout
+          Service --> Controller : ProcessResult
+          alt Успех
+            Controller --> Web : HTTP 200 {input:n, result:n+1}
+          else Исключение № 1
+            Controller --> Web : HTTP 409 DUPLICATE_NUMBER
+          else Исключение № 2
+            Controller --> Web : HTTP 409 PREDECESSOR_OF_PROCESSED_NUMBER
+          end
+        else Ошибка фиксации
+          Repository --> Service : CommitError
+          Service -> Service : ERROR DATABASE_COMMIT_FAILED в stdout
+          Service --> Controller : DatabaseError
+          Controller --> Web : HTTP 503 SERVICE_UNAVAILABLE
+        end
+      else Ошибка SQL на любом шаге проверки/записи
+        Repository --> Service : RepositoryError
+        Service -> Repository : rollback()
+        Repository -> DB : ROLLBACK
+        Service -> Service : ERROR DATABASE_OPERATION_FAILED в stdout
+        Service --> Controller : DatabaseError
+        Controller --> Web : HTTP 503 SERVICE_UNAVAILABLE
+      end
+    end
+  end
+end
+Web --> Client : Передать HTTP-ответ
+@enduml
